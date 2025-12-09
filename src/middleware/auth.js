@@ -2,16 +2,51 @@ import jwt from 'jsonwebtoken';
 import { JWT_SECRET } from '../config.js';
 import { query } from '../db.js';
 
-// Blacklist token yang sudah di-logout (simple in-memory, bisa pakai Redis untuk production)
-const tokenBlacklist = new Set();
+// Blacklist token yang sudah di-logout (in-memory dengan auto-cleanup setelah 1 jam)
+// Format: { token: timestamp }
+const tokenBlacklist = new Map();
 
 export function addToBlacklist(token) {
-  tokenBlacklist.add(token);
+  tokenBlacklist.set(token, Date.now());
+  console.log(`✅ Token added to blacklist. Total blacklisted: ${tokenBlacklist.size}`);
 }
 
 export function isBlacklisted(token) {
-  return tokenBlacklist.has(token);
+  if (!tokenBlacklist.has(token)) return false;
+  
+  const blacklistedAt = tokenBlacklist.get(token);
+  const oneHourMs = 60 * 60 * 1000; // 1 jam dalam ms
+  const now = Date.now();
+  
+  // Jika sudah lewat 1 jam, hapus dari blacklist
+  if (now - blacklistedAt > oneHourMs) {
+    tokenBlacklist.delete(token);
+    console.log(`🧹 Token removed from blacklist (expired after 1 hour)`);
+    return false;
+  }
+  
+  return true;
 }
+
+// Cleanup scheduler: jalankan setiap 30 menit
+setInterval(() => {
+  const oneHourMs = 60 * 60 * 1000;
+  const now = Date.now();
+  let removedCount = 0;
+  
+  for (const [token, timestamp] of tokenBlacklist.entries()) {
+    if (now - timestamp > oneHourMs) {
+      tokenBlacklist.delete(token);
+      removedCount++;
+    }
+  }
+  
+  if (removedCount > 0) {
+    console.log(`🧹 Cleaned up ${removedCount} expired tokens from blacklist. Remaining: ${tokenBlacklist.size}`);
+  }
+}, 30 * 60 * 1000); // Jalankan setiap 30 menit
+
+console.log("✅ Token blacklist auto-cleanup started (1 hour TTL, cleanup every 30 min)");
 
 export function authMiddleware(req, res, next) {
   try {
