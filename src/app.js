@@ -6,6 +6,7 @@ import uploadRoutes from "./routes/upload.js";
 import retailRoutes from "./routes/retail.js";
 import transactionRoutes from "./routes/transaction.js";
 import dashboardRoutes from "./routes/dashboard.js";
+import reportRoutes from "./routes/report.js";
 import cookieParser from "cookie-parser";
 
 const app = express();
@@ -19,6 +20,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/retail", retailRoutes);
 app.use("/api/transactions", transactionRoutes);
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/reports", reportRoutes);
 app.use("/api/upload", uploadRoutes);         // ⬅️ dan ini
 
 app.get('/', (req, res) => {

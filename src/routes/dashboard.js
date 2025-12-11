@@ -5,6 +5,29 @@ import { query } from "../db.js";
 const router = express.Router();
 
 /**
+ * GET /api/dashboard/client-info
+ * Get client store info including photo URL
+ */
+router.get("/client-info", authMiddleware, async (req, res) => {
+  const clientId = req.client.id;
+  try {
+    const clientRes = await query(
+      "SELECT id, name, store_photo_url FROM clients WHERE id = $1",
+      [clientId]
+    );
+
+    if (clientRes.rowCount === 0) {
+      return res.status(404).json({ message: "Client not found" });
+    }
+
+    res.json(clientRes.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Error fetching client info" });
+  }
+});
+
+/**
  * GET /api/dashboard/summary?range=daily|monthly|yearly
  */
 router.get("/summary", authMiddleware, async (req, res) => {
