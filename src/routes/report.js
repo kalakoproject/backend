@@ -78,15 +78,23 @@ router.get("/products/export", authMiddleware, async (req, res) => {
   const dateFilter = getDateFilter(range);
 
   try {
+    // Get client info
+    const clientRes = await pool.query(
+      "SELECT name FROM clients WHERE id = $1",
+      [clientId]
+    );
+    const clientName = clientRes.rows[0]?.name || "Toko";
+
     const dataRes = await pool.query(
-      `SELECT p.id, p.name,
+      `SELECT p.id, p.name, p.unit,
               COALESCE(SUM(i.quantity),0) AS jumlah,
+              COALESCE(AVG(i.unit_price),0) AS avg_price,
               COALESCE(SUM(i.subtotal),0) AS total_pendapatan
        FROM sales_transaction_items i
        JOIN sales_transactions t ON t.id = i.transaction_id
        JOIN products p ON p.id = i.product_id
        WHERE t.client_id = $1 AND ${dateFilter}
-       GROUP BY p.id, p.name
+       GROUP BY p.id, p.name, p.unit
        ORDER BY SUM(i.subtotal) DESC`,
       [clientId]
     );
@@ -94,28 +102,121 @@ router.get("/products/export", authMiddleware, async (req, res) => {
     const rows = dataRes.rows.map((r, idx) => ({
       no: idx + 1,
       name: r.name,
+      unit: r.unit || "pcs",
       jumlah: Number(r.jumlah),
+      avg_price: Number(r.avg_price),
       total_pendapatan: Number(r.total_pendapatan),
     }));
+
+    const totalRevenue = rows.reduce((s, r) => s + (r.total_pendapatan || 0), 0);
+
+    // Format range for display
+    const rangeLabel = {
+      daily: "Hari Ini",
+      weekly: "Minggu Ini",
+      monthly: "Bulan Ini",
+      yearly: "Tahun Ini"
+    };
+    const periodText = rangeLabel[range] || range;
 
     if (format === "excel") {
       const workbook = new ExcelJS.Workbook();
       const sheet = workbook.addWorksheet("Laporan Penjualan");
-      sheet.columns = [
-        { header: "No", key: "no", width: 6 },
-        { header: "Nama Produk", key: "name", width: 40 },
-        { header: "Jumlah", key: "jumlah", width: 12 },
-        { header: "Total Pendapatan", key: "total_pendapatan", width: 18 },
-      ];
-      rows.forEach((r) => sheet.addRow(r));
 
-      // add summary row with total pendapatan for the selected period
-      const totalRevenue = rows.reduce((s, r) => s + (r.total_pendapatan || 0), 0);
+      // Title
+      sheet.mergeCells("A1:F1");
+      sheet.getCell("A1").value = clientName;
+      sheet.getCell("A1").font = { size: 16, bold: true };
+      sheet.getCell("A1").alignment = { horizontal: "center" };
+
+      sheet.mergeCells("A2:F2");
+      sheet.getCell("A2").value = "Laporan Penjualan Produk";
+      sheet.getCell("A2").font = { size: 12, bold: true };
+      sheet.getCell("A2").alignment = { horizontal: "center" };
+
+      sheet.mergeCells("A3:F3");
+      sheet.getCell("A3").value = `Periode: ${periodText}`;
+      sheet.getCell("A3").font = { size: 10 };
+      sheet.getCell("A3").alignment = { horizontal: "center" };
+
+      // Empty row
       sheet.addRow([]);
-      const summaryRow = sheet.addRow({ name: "Total Pendapatan", total_pendapatan: totalRevenue });
-      summaryRow.eachCell((cell) => {
-        cell.font = { bold: true };
+
+      // Header row
+      const headerRow = sheet.addRow(["No", "Nama Produk", "Qty", "Satuan", "Harga Rata-rata", "Total Pendapatan"]);
+      headerRow.font = { bold: true };
+      headerRow.eachCell((cell) => {
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FFD3D3D3" },
+        };
+        cell.border = {
+          top: { style: "thin" },
+          left: { style: "thin" },
+          bottom: { style: "thin" },
+          right: { style: "thin" },
+        };
+        cell.alignment = { horizontal: "center", vertical: "middle" };
       });
+
+      // Data rows
+      rows.forEach((r) => {
+        const formatQty = (qty, unit) => {
+          const n = Number(qty || 0);
+          const u = (unit || "").toLowerCase().trim();
+          if (u === "pcs" || u === "pc") {
+            const displayed = n >= 1000 ? n / 1000 : n;
+            return Number.isInteger(displayed) ? displayed : displayed.toFixed(2);
+          }
+          return n.toFixed(2);
+        };
+
+        const row = sheet.addRow([
+          r.no,
+          r.name,
+          formatQty(r.jumlah, r.unit),
+          r.unit,
+          Number(r.avg_price || 0),
+          Number(r.total_pendapatan || 0),
+        ]);
+
+        row.getCell(5).numFmt = 'Rp #,##0';
+        row.getCell(6).numFmt = 'Rp #,##0';
+        
+        row.eachCell((cell) => {
+          cell.border = {
+            top: { style: "thin" },
+            left: { style: "thin" },
+            bottom: { style: "thin" },
+            right: { style: "thin" },
+          };
+        });
+      });
+
+      // Total row
+      sheet.addRow([]);
+      const totalRow = sheet.addRow(["", "", "", "", "Total Pendapatan:", totalRevenue]);
+      totalRow.font = { bold: true, size: 11 };
+      totalRow.getCell(6).numFmt = 'Rp #,##0';
+      totalRow.getCell(5).fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFE6F0FF" },
+      };
+      totalRow.getCell(6).fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFE6F0FF" },
+      };
+
+      // Column widths
+      sheet.getColumn(1).width = 6;
+      sheet.getColumn(2).width = 35;
+      sheet.getColumn(3).width = 12;
+      sheet.getColumn(4).width = 10;
+      sheet.getColumn(5).width = 18;
+      sheet.getColumn(6).width = 20;
 
       res.setHeader(
         "Content-Type",
@@ -130,56 +231,78 @@ router.get("/products/export", authMiddleware, async (req, res) => {
       return;
     }
 
+    // PDF Generation
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="laporan_penjualan_${range}.pdf"`
     );
 
-    const doc = new PDFDocument({ size: "A4", margin: 30 });
+    const doc = new PDFDocument({ margin: 50 });
     doc.pipe(res);
 
-    doc.fontSize(16).text("Laporan Penjualan", { align: "center" });
-    doc.moveDown(0.5);
-    doc.fontSize(10).text(`Periode: ${range}`, { align: "center" });
-    doc.moveDown(1);
+    // Header
+    doc.fontSize(20).text(clientName, { align: "center" });
+    doc.fontSize(14).text("Laporan Penjualan Produk", { align: "center" });
+    doc.fontSize(10).text(`Periode: ${periodText}`, { align: "center" });
+    doc.moveDown(2);
 
-    const tableTop = doc.y + 10;
-    const itemX = {
-      no: 40,
-      name: 80,
-      jumlah: 360,
-      total: 440,
-    };
+    // Table header
+    const tableTop = doc.y;
+    const colWidths = [30, 200, 60, 60, 90, 100];
+    const cols = ["No", "Nama Produk", "Qty", "Satuan", "Harga Rata-rata", "Total"];
 
-    doc.fontSize(10).text("No", itemX.no, tableTop);
-    doc.text("Nama Produk", itemX.name, tableTop);
-    doc.text("Jumlah", itemX.jumlah, tableTop);
-    doc.text("Total Pendapatan", itemX.total, tableTop);
-    doc.moveDown(0.5);
-
-    let y = tableTop + 20;
-    rows.forEach((r) => {
-      if (y > 750) {
-        doc.addPage();
-        y = 40;
-      }
-      doc.fontSize(9).text(r.no.toString(), itemX.no, y);
-      doc.text(r.name, itemX.name, y, { width: 260 });
-      doc.text(r.jumlah.toString(), itemX.jumlah, y);
-      doc.text(new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR" }).format(r.total_pendapatan), itemX.total, y);
-      y += 18;
+    doc.fontSize(9).font("Helvetica-Bold");
+    let x = 50;
+    cols.forEach((col, i) => {
+      doc.text(col, x, tableTop, { width: colWidths[i], align: i === 0 ? "center" : "left" });
+      x += colWidths[i];
     });
 
-    // write total revenue summary for the exported period
-    const totalRevenue = rows.reduce((s, r) => s + (r.total_pendapatan || 0), 0);
-    if (y > 720) {
-      doc.addPage();
-      y = 40;
-    }
-    doc.moveDown(0.5);
-    doc.fontSize(10).font('Helvetica-Bold').text('Total Pendapatan', itemX.name, y);
-    doc.text(new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR" }).format(totalRevenue), itemX.total, y);
+    doc.moveTo(50, tableTop + 15).lineTo(540, tableTop + 15).stroke();
+
+    // Table rows
+    doc.font("Helvetica");
+    let y = tableTop + 20;
+    rows.forEach((item) => {
+      if (y > 700) {
+        doc.addPage();
+        y = 50;
+      }
+
+      const formatRupiah = (val) => `Rp ${Number(val || 0).toLocaleString("id-ID")}`;
+      const formatQty = (qty, unit) => {
+        const n = Number(qty || 0);
+        const u = (unit || "").toLowerCase().trim();
+        if (u === "pcs" || u === "pc") {
+          const displayed = n >= 1000 ? n / 1000 : n;
+          return Number.isInteger(displayed) ? displayed : displayed.toFixed(2);
+        }
+        return n.toFixed(2);
+      };
+
+      x = 50;
+      doc.text(String(item.no), x, y, { width: colWidths[0], align: "center" });
+      x += colWidths[0];
+      doc.text(item.name || "-", x, y, { width: colWidths[1] });
+      x += colWidths[1];
+      doc.text(formatQty(item.jumlah, item.unit), x, y, { width: colWidths[2] });
+      x += colWidths[2];
+      doc.text(item.unit || "pcs", x, y, { width: colWidths[3] });
+      x += colWidths[3];
+      doc.text(formatRupiah(item.avg_price), x, y, { width: colWidths[4] });
+      x += colWidths[4];
+      doc.text(formatRupiah(item.total_pendapatan), x, y, { width: colWidths[5] });
+
+      y += 20;
+    });
+
+    // Total
+    doc.moveDown();
+    doc.moveTo(50, y).lineTo(540, y).stroke();
+    y += 10;
+    doc.fontSize(11).font("Helvetica-Bold");
+    doc.text(`Total Pendapatan: Rp ${totalRevenue.toLocaleString("id-ID")}`, 50, y, { align: "right" });
 
     doc.end();
   } catch (err) {

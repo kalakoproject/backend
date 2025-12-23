@@ -1,6 +1,8 @@
 import express from "express";
 import { pool } from "../db.js";
 import { authMiddleware } from "../middleware/auth.js";
+import ExcelJS from "exceljs";
+import PDFDocument from "pdfkit";
 
 const router = express.Router();
 
@@ -113,10 +115,11 @@ router.post("/", authMiddleware, async (req, res) => {
 /**
  * GET /api/transactions
  * Get transaction history
+ * Query params: limit, offset, startDate, endDate
  */
 router.get("/", authMiddleware, async (req, res) => {
   const clientId = req.client.id;
-  const { limit = 50, offset = 0, search = "" } = req.query;
+  const { limit = 50, offset = 0, startDate = "", endDate = "" } = req.query;
 
   try {
     let query = `
@@ -135,9 +138,15 @@ router.get("/", authMiddleware, async (req, res) => {
     `;
     const params = [clientId];
 
-    if (search) {
-      query += ` AND (u.username ILIKE $${params.length + 1} OR st.id::TEXT ILIKE $${params.length + 1})`;
-      params.push(`%${search}%`);
+    // Filter by date range
+    if (startDate) {
+      query += ` AND DATE(st.created_at) >= $${params.length + 1}`;
+      params.push(startDate);
+    }
+    
+    if (endDate) {
+      query += ` AND DATE(st.created_at) <= $${params.length + 1}`;
+      params.push(endDate);
     }
 
     query += ` GROUP BY st.id, st.total_amount, st.paid_amount, st.change_amount, st.created_at, u.username`;
@@ -156,9 +165,14 @@ router.get("/", authMiddleware, async (req, res) => {
     `;
     const countParams = [clientId];
     
-    if (search) {
-      countQuery += ` AND (u.username ILIKE $${countParams.length + 1} OR st.id::TEXT ILIKE $${countParams.length + 1})`;
-      countParams.push(`%${search}%`);
+    if (startDate) {
+      countQuery += ` AND DATE(st.created_at) >= $${countParams.length + 1}`;
+      countParams.push(startDate);
+    }
+    
+    if (endDate) {
+      countQuery += ` AND DATE(st.created_at) <= $${countParams.length + 1}`;
+      countParams.push(endDate);
     }
 
     const countResult = await pool.query(countQuery, countParams);
@@ -209,6 +223,225 @@ router.get("/:id/items", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(400).json({ message: err.message || "Gagal fetch detail transaksi" });
+  }
+});
+
+/**
+ * GET /api/transactions/export
+ * Export transaction summary to Excel or PDF
+ * Query params: startDate, endDate, format (excel/pdf)
+ */
+router.get("/export", authMiddleware, async (req, res) => {
+  const clientId = req.client.id;
+  const { startDate, endDate, format = "excel" } = req.query;
+
+  try {
+    // Get client info
+    const clientRes = await pool.query(
+      "SELECT name FROM clients WHERE id = $1",
+      [clientId]
+    );
+    const clientName = clientRes.rows[0]?.name || "Toko";
+
+    // Query untuk mendapatkan ringkasan produk yang terjual
+    let query = `
+      SELECT 
+        p.name as product_name,
+        p.unit,
+        SUM(sti.quantity) as total_quantity,
+        AVG(sti.unit_price) as avg_price,
+        SUM(sti.subtotal) as total_revenue
+      FROM sales_transaction_items sti
+      LEFT JOIN products p ON sti.product_id = p.id
+      LEFT JOIN sales_transactions st ON sti.transaction_id = st.id
+      WHERE st.client_id = $1
+    `;
+    const params = [clientId];
+
+    if (startDate) {
+      query += ` AND DATE(st.created_at) >= $${params.length + 1}`;
+      params.push(startDate);
+    }
+
+    if (endDate) {
+      query += ` AND DATE(st.created_at) <= $${params.length + 1}`;
+      params.push(endDate);
+    }
+
+    query += ` GROUP BY p.name, p.unit ORDER BY total_revenue DESC`;
+
+    const result = await pool.query(query, params);
+    const items = result.rows;
+
+    // Total penghasilan
+    const totalRevenue = items.reduce((sum, item) => sum + Number(item.total_revenue || 0), 0);
+
+    // Format tanggal untuk display
+    const formatDate = (dateStr) => {
+      if (!dateStr) return "-";
+      const d = new Date(dateStr);
+      return d.toLocaleDateString("id-ID", { day: "2-digit", month: "long", year: "numeric" });
+    };
+
+    const periodText = `${formatDate(startDate)} - ${formatDate(endDate)}`;
+
+    if (format === "pdf") {
+      // Generate PDF
+      const doc = new PDFDocument({ margin: 50 });
+      
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename=laporan-transaksi-${startDate}-${endDate}.pdf`);
+      
+      doc.pipe(res);
+
+      // Header
+      doc.fontSize(20).text(clientName, { align: "center" });
+      doc.fontSize(14).text("Laporan Transaksi", { align: "center" });
+      doc.fontSize(10).text(periodText, { align: "center" });
+      doc.moveDown(2);
+
+      // Table header
+      const tableTop = doc.y;
+      const colWidths = [30, 180, 80, 100, 100];
+      const cols = ["No", "Nama Produk", "Qty", "Harga Rata-rata", "Total"];
+
+      doc.fontSize(9).font("Helvetica-Bold");
+      let x = 50;
+      cols.forEach((col, i) => {
+        doc.text(col, x, tableTop, { width: colWidths[i], align: i === 0 ? "center" : "left" });
+        x += colWidths[i];
+      });
+
+      doc.moveTo(50, tableTop + 15).lineTo(540, tableTop + 15).stroke();
+
+      // Table rows
+      doc.font("Helvetica");
+      let y = tableTop + 20;
+      items.forEach((item, index) => {
+        if (y > 700) {
+          doc.addPage();
+          y = 50;
+        }
+
+        const formatRupiah = (val) => `Rp ${Number(val || 0).toLocaleString("id-ID")}`;
+        const formatQty = (qty, unit) => {
+          const n = Number(qty || 0);
+          const u = (unit || "").toLowerCase().trim();
+          if (u === "pcs" || u === "pc") {
+            const displayed = n >= 1000 ? n / 1000 : n;
+            return Number.isInteger(displayed) ? `${displayed} ${unit}` : `${displayed.toFixed(2)} ${unit}`;
+          }
+          return `${n.toFixed(2)} ${unit}`;
+        };
+
+        x = 50;
+        doc.text(String(index + 1), x, y, { width: colWidths[0], align: "center" });
+        x += colWidths[0];
+        doc.text(item.product_name || "-", x, y, { width: colWidths[1] });
+        x += colWidths[1];
+        doc.text(formatQty(item.total_quantity, item.unit), x, y, { width: colWidths[2] });
+        x += colWidths[2];
+        doc.text(formatRupiah(item.avg_price), x, y, { width: colWidths[3] });
+        x += colWidths[3];
+        doc.text(formatRupiah(item.total_revenue), x, y, { width: colWidths[4] });
+
+        y += 20;
+      });
+
+      // Total
+      doc.moveDown();
+      doc.moveTo(50, y).lineTo(540, y).stroke();
+      y += 10;
+      doc.fontSize(11).font("Helvetica-Bold");
+      doc.text(`Total Penghasilan: Rp ${totalRevenue.toLocaleString("id-ID")}`, 50, y, { align: "right" });
+
+      doc.end();
+
+    } else {
+      // Generate Excel
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet("Laporan Transaksi");
+
+      // Title
+      worksheet.mergeCells("A1:E1");
+      worksheet.getCell("A1").value = clientName;
+      worksheet.getCell("A1").font = { size: 16, bold: true };
+      worksheet.getCell("A1").alignment = { horizontal: "center" };
+
+      worksheet.mergeCells("A2:E2");
+      worksheet.getCell("A2").value = "Laporan Transaksi";
+      worksheet.getCell("A2").font = { size: 12, bold: true };
+      worksheet.getCell("A2").alignment = { horizontal: "center" };
+
+      worksheet.mergeCells("A3:E3");
+      worksheet.getCell("A3").value = periodText;
+      worksheet.getCell("A3").font = { size: 10 };
+      worksheet.getCell("A3").alignment = { horizontal: "center" };
+
+      // Header
+      worksheet.addRow([]);
+      const headerRow = worksheet.addRow(["No", "Nama Produk", "Qty", "Harga Rata-rata", "Total"]);
+      headerRow.font = { bold: true };
+      headerRow.eachCell((cell) => {
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FFD3D3D3" },
+        };
+        cell.border = {
+          top: { style: "thin" },
+          left: { style: "thin" },
+          bottom: { style: "thin" },
+          right: { style: "thin" },
+        };
+      });
+
+      // Data rows
+      items.forEach((item, index) => {
+        const formatQty = (qty, unit) => {
+          const n = Number(qty || 0);
+          const u = (unit || "").toLowerCase().trim();
+          if (u === "pcs" || u === "pc") {
+            const displayed = n >= 1000 ? n / 1000 : n;
+            return Number.isInteger(displayed) ? `${displayed} ${unit}` : `${displayed.toFixed(2)} ${unit}`;
+          }
+          return `${n.toFixed(2)} ${unit}`;
+        };
+
+        const row = worksheet.addRow([
+          index + 1,
+          item.product_name || "-",
+          formatQty(item.total_quantity, item.unit),
+          Number(item.avg_price || 0),
+          Number(item.total_revenue || 0),
+        ]);
+
+        row.getCell(4).numFmt = 'Rp #,##0';
+        row.getCell(5).numFmt = 'Rp #,##0';
+      });
+
+      // Total
+      worksheet.addRow([]);
+      const totalRow = worksheet.addRow(["", "", "", "Total Penghasilan:", totalRevenue]);
+      totalRow.font = { bold: true };
+      totalRow.getCell(5).numFmt = 'Rp #,##0';
+
+      // Column widths
+      worksheet.getColumn(1).width = 5;
+      worksheet.getColumn(2).width = 30;
+      worksheet.getColumn(3).width = 15;
+      worksheet.getColumn(4).width = 20;
+      worksheet.getColumn(5).width = 20;
+
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename=laporan-transaksi-${startDate}-${endDate}.xlsx`);
+
+      await workbook.xlsx.write(res);
+      res.end();
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: err.message || "Gagal export laporan" });
   }
 });
 
