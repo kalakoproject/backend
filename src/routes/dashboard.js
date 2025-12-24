@@ -12,7 +12,19 @@ router.get("/client-info", authMiddleware, async (req, res) => {
   const clientId = req.client.id;
   try {
     const clientRes = await query(
-      "SELECT id, name, store_photo_url FROM clients WHERE id = $1",
+      `SELECT 
+         id, 
+         name, 
+         address, 
+         city, 
+         district, 
+         sub_district, 
+         province, 
+         phone, 
+         email, 
+         store_photo_url 
+       FROM clients 
+       WHERE id = $1`,
       [clientId]
     );
 
