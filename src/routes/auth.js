@@ -38,19 +38,48 @@ router.post('/send-otp-email', async (req, res) => {
 
   if (!email) return res.status(400).json({ message: 'Email wajib diisi' });
 
+  const normalizedEmail = String(email).trim().toLowerCase();
+
+  // Tolak jika email sudah terdaftar sebagai client
+  try {
+    const exists = await query('SELECT 1 FROM clients WHERE LOWER(email) = $1', [normalizedEmail]);
+    if (exists.rowCount > 0) {
+      return res.status(409).json({ message: 'Email sudah digunakan' });
+    }
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: 'Gagal memeriksa email' });
+  }
+
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
 
   try {
     await query(
       'INSERT INTO email_otp_codes (email, otp, expires_at) VALUES ($1,$2,$3)',
-      [email, otp, expiresAt]
+      [normalizedEmail, otp, expiresAt]
     );
 
-    await sendEmail(email, 'Kode OTP Pendaftaran Kalako', `Kode OTP Anda: ${otp}`);
+    await sendEmail(normalizedEmail, 'Kode OTP Pendaftaran Kalako', `Kode OTP Anda: ${otp}`);
 
     res.json({ message: 'OTP telah dikirim ke email.' });
   } catch (err) {
+    // Jika terjadi duplikasi id akibat sequence tidak sinkron, selaraskan lalu coba sekali lagi
+    if (err && err.code === '23505' && err.constraint === 'email_otp_codes_pkey') {
+      try {
+        await query(
+          "SELECT setval('public.email_otp_codes_id_seq', COALESCE((SELECT MAX(id) FROM public.email_otp_codes), 0), true)"
+        );
+        await query(
+          'INSERT INTO email_otp_codes (email, otp, expires_at) VALUES ($1,$2,$3)',
+          [normalizedEmail, otp, expiresAt]
+        );
+        await sendEmail(normalizedEmail, 'Kode OTP Pendaftaran Kalako', `Kode OTP Anda: ${otp}`);
+        return res.json({ message: 'OTP telah dikirim ke email.' });
+      } catch (retryErr) {
+        console.error('Retry after sequence fix failed:', retryErr);
+      }
+    }
     console.error(err);
     res.status(500).json({ message: 'Gagal mengirim OTP' });
   }
@@ -84,6 +113,12 @@ router.post('/client/signup-with-otp', async (req, res) => {
 
 
   try {
+    // Cek email belum dipakai client lain
+    const emailUsed = await query('SELECT 1 FROM clients WHERE LOWER(email) = $1', [email]);
+    if (emailUsed.rowCount > 0) {
+      return res.status(409).json({ message: 'Email sudah digunakan' });
+    }
+
     // cek OTP
     const otpRes = await query(
       `SELECT * FROM email_otp_codes
@@ -99,11 +134,7 @@ router.post('/client/signup-with-otp', async (req, res) => {
     // hapus semua OTP untuk email ini
     await query('DELETE FROM email_otp_codes WHERE email = $1', [email]);
 
-    // pastikan username belum dipakai
-    const existingUser = await query('SELECT id FROM users WHERE username = $1', [username]);
-    if (existingUser.rowCount > 0) {
-      return res.status(400).json({ message: 'Username sudah digunakan' });
-    }
+    // Username boleh sama di tenant berbeda. Tidak perlu cek global di sini.
 
     const subdomain = await generateUniqueSubdomain(store_name);
     const passwordHash = await bcrypt.hash(password, 10);
@@ -145,6 +176,8 @@ router.post('/client/signup-with-otp', async (req, res) => {
       return { client, userId: userRes.rows[0].id, clientId: client.id };
     });
 
+
+
     const token = jwt.sign({ userId: result.userId, clientId: result.clientId, role: 'client_admin' }, JWT_SECRET, {
       expiresIn: JWT_EXPIRES_IN
     });
@@ -164,6 +197,20 @@ router.post('/client/signup-with-otp', async (req, res) => {
   }
 });
 
+// ====== 2b. CEK KETERSEDIAAN EMAIL ======
+router.get('/check-email', async (req, res) => {
+  const email = String(req.query.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ message: 'Email wajib diisi' });
+  try {
+    const exists = await query('SELECT 1 FROM clients WHERE LOWER(email) = $1', [email]);
+    const available = exists.rowCount === 0;
+    res.json({ available });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Gagal memeriksa email' });
+  }
+});
+
 // ====== 3. LOGIN ======
 router.post('/login', async (req, res) => {
   const { username, password } = req.body;
@@ -174,18 +221,22 @@ router.post('/login', async (req, res) => {
   }
 
   try {
-    const userRes = await query('SELECT * FROM users WHERE username = $1', [username]);
-    if (userRes.rowCount === 0) {
-      return res.status(400).json({ message: 'Username atau password salah' });
-    }
+    let user;
 
-    const user = userRes.rows[0];
-
-    // super_admin boleh di domain mana saja, lainnya harus cocok client
-    if (user.role !== 'super_admin') {
-      if (!client || user.client_id !== client.id) {
+    if (client) {
+      // Login di subdomain tenant: hanya user milik tenant ini yang boleh
+      const userRes = await query('SELECT * FROM users WHERE username = $1 AND client_id = $2', [username, client.id]);
+      if (userRes.rowCount === 0) {
         return res.status(403).json({ message: 'Akses ditolak untuk subdomain ini' });
       }
+      user = userRes.rows[0];
+    } else {
+      // Domain utama: hanya super_admin yang boleh login di sini
+      const userRes = await query("SELECT * FROM users WHERE username = $1 AND role = 'super_admin'", [username]);
+      if (userRes.rowCount === 0) {
+        return res.status(403).json({ message: 'Akun ini harus login via subdomain toko' });
+      }
+      user = userRes.rows[0];
     }
 
     const ok = await bcrypt.compare(password, user.password_hash);
@@ -196,11 +247,11 @@ router.post('/login', async (req, res) => {
     console.log("User data:", { userId: user.id, clientId: user.client_id, role: user.role });
     const token = jwt.sign({ userId: user.id, clientId: user.client_id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     res.cookie("token", token, {
-      httpOnly: false,              // kalau mau lebih aman bisa true, tapi JS tidak bisa baca
+      httpOnly: false,
       sameSite: "lax",
-      domain: ".kalako.local",      // penting: titik di depan -> berlaku utk semua subdomain
+      domain: ".kalako.local",
       path: "/",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 hari
+      maxAge: 7 * 24 * 60 * 60 * 1000,
     });
     res.json({ message: 'Login berhasil', token, role: user.role });
   } catch (err) {

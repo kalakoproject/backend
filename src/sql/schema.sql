@@ -775,6 +775,14 @@ ALTER TABLE ONLY public.clients
 
 
 --
+-- Name: clients clients_email_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.clients
+    ADD CONSTRAINT clients_email_key UNIQUE (email);
+
+
+--
 -- TOC entry 3270 (class 2606 OID 18600)
 -- Name: customers customers_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
@@ -860,8 +868,9 @@ ALTER TABLE ONLY public.users
 -- Name: users users_username_key; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
+-- Replace global username uniqueness with per-tenant uniqueness
 ALTER TABLE ONLY public.users
-    ADD CONSTRAINT users_username_key UNIQUE (username);
+    ADD CONSTRAINT users_client_username_unique UNIQUE (client_id, username);
 
 
 --
