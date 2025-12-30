@@ -246,10 +246,16 @@ router.post('/login', async (req, res) => {
 
     console.log("User data:", { userId: user.id, clientId: user.client_id, role: user.role });
     const token = jwt.sign({ userId: user.id, clientId: user.client_id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    
+    // Set cookie domain based on where request came from
+    // For api.portorey.my.id (global API): use .portorey.my.id so subdomain cookies work
+    // For tenant.portorey.my.id (subdomain API): use .portorey.my.id
+    const cookieDomain = ".portorey.my.id";
+    
     res.cookie("token", token, {
       httpOnly: false,
       sameSite: "lax",
-      domain: ".kalako.local",
+      domain: cookieDomain,
       path: "/",
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
@@ -283,7 +289,7 @@ router.post("/logout", (req, res) => {
   }
 
   res.clearCookie("token", {
-    domain: ".kalako.local",
+    domain: ".api.portorey.my.id",
     path: "/",
   });
   return res.json({ message: "Logged out successfully" });
