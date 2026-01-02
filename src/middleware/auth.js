@@ -50,13 +50,19 @@ console.log("✅ Token blacklist auto-cleanup started (1 hour TTL, cleanup every
 
 export function authMiddleware(req, res, next) {
   try {
+    // Accept token from Authorization header (Bearer ...) OR cookie `token`
     const authHeader = req.headers.authorization;
+    let token = null;
 
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ message: "Unauthorized" });
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      token = authHeader.split(" ")[1];
+    } else if (req.cookies && req.cookies.token) {
+      token = req.cookies.token;
     }
 
-    const token = authHeader.split(" ")[1];
+    if (!token) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
 
     // Cek apakah token sudah di-logout
     if (isBlacklisted(token)) {
@@ -66,7 +72,7 @@ export function authMiddleware(req, res, next) {
 
     console.log("✅ Token is valid (not blacklisted):", token.substring(0, 20) + "...");
 
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    const payload = jwt.verify(token, JWT_SECRET);
 
     // payload harus berisi clientId, sesuaikan dengan proses login
     // misalnya waktu sign token: { userId: user.id, clientId: user.client_id, role: user.role }
@@ -85,3 +91,4 @@ export function authMiddleware(req, res, next) {
     return res.status(401).json({ message: "Invalid token" });
   }
 }
+

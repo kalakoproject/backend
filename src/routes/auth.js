@@ -273,6 +273,14 @@ router.post("/logout", (req, res) => {
   if (authHeader && authHeader.startsWith("Bearer ")) {
     token = authHeader.split(" ")[1];
   }
+  // fallback: token from cookie
+  if (!token && req.cookies && req.cookies.token) {
+    token = req.cookies.token;
+  }
+  // also accept admin_token if present
+  if (!token && req.cookies && req.cookies.admin_token) {
+    token = req.cookies.admin_token;
+  }
   
   // Jika ada token valid, tambahkan ke blacklist
   if (token) {
@@ -287,11 +295,17 @@ router.post("/logout", (req, res) => {
   } else {
     console.log("⚠️ No token provided in logout request");
   }
-
-  res.clearCookie("token", {
-    domain: ".api.portorey.my.id",
-    path: "/",
-  });
+  // Clear cookie for multiple possible domains so logout works across deployments
+  try {
+    res.clearCookie("token", { path: "/" });
+    res.clearCookie("token", { domain: ".portorey.my.id", path: "/" });
+    res.clearCookie("token", { domain: ".api.portorey.my.id", path: "/" });
+    // Clear admin token cookie too
+    res.clearCookie("admin_token", { path: "/" });
+    res.clearCookie("admin_token", { domain: ".portorey.my.id", path: "/" });
+  } catch (e) {
+    console.warn('Error clearing cookies on logout:', e && e.message);
+  }
   return res.json({ message: "Logged out successfully" });
 });
 
