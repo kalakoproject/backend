@@ -144,7 +144,7 @@ router.post('/client/signup-with-otp', async (req, res) => {
         `INSERT INTO clients
     (name, owner_name, owner_id_number, address, phone, email, subdomain, status, trial_ends_at,
      city, district, sub_district, province, store_photo_url)
-   VALUES ($1,$2,$3,$4,$5,$6,$7,$8, NOW() + INTERVAL '14 days',
+   VALUES ($1,$2,$3,$4,$5,$6,$7,$8, NOW() + INTERVAL '30 days',
            $9,$10,$11,$12,$13)
    RETURNING *`,
         [
@@ -181,6 +181,34 @@ router.post('/client/signup-with-otp', async (req, res) => {
     const token = jwt.sign({ userId: result.userId, clientId: result.clientId, role: 'client_admin' }, JWT_SECRET, {
       expiresIn: JWT_EXPIRES_IN
     });
+
+    // Send welcome email with subdomain info
+    try {
+      const subdomainUrl = `https://${result.client.subdomain}.portorey.my.id`;
+      const emailSubject = 'Selamat! Pendaftaran Kalako Anda Berhasil';
+      const emailBody = `
+Selamat, pendaftaran Anda ke Kalako telah berhasil!
+
+Berikut adalah domain web Anda:
+${subdomainUrl}
+
+Nama Toko: ${result.client.name}
+Subdomain: ${result.client.subdomain}.portorey.my.id
+
+Anda dapat login menggunakan username dan password yang telah Anda daftarkan.
+
+Terima kasih telah bergabung dengan Kalako!
+
+---
+Tim Kalako
+      `.trim();
+
+      await sendEmail(email, emailSubject, emailBody);
+      console.log(`✅ Welcome email sent to ${email}`);
+    } catch (emailErr) {
+      console.error('⚠️ Failed to send welcome email:', emailErr);
+      // Don't fail the registration if email fails
+    }
 
     res.status(201).json({
       message: 'Pendaftaran client berhasil',
