@@ -17,7 +17,7 @@ const app = express();
 
 app.use(cookieParser());
 // Enable CORS with credentials so browser fetches from the admin front-end
-// (e.g. https://portorey.my.id) can include cookies when calling the API
+// (e.g. https://kalako.local:3000 in dev) can include cookies when calling the API
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(tenantMiddleware);

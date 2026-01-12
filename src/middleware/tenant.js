@@ -5,7 +5,7 @@ export async function tenantMiddleware(req, res, next) {
   const host = req.headers.host;
   if (!host) return res.status(400).json({ message: 'Host header missing' });
 
-  const withoutPort = host.split(':')[0];        // api.portorey.my.id or tokomaju.portorey.my.id
+  const withoutPort = host.split(':')[0];        // e.g. api.kalako.local or tokomaju.kalako.local
   const parts = withoutPort.split('.');
 
   let subdomain = null;
@@ -13,9 +13,9 @@ export async function tenantMiddleware(req, res, next) {
   // 1. Try to extract subdomain from hostname (for tenant-specific domains)
   if (withoutPort.endsWith(BASE_DOMAIN) && parts.length > 2) {
     const prefix = parts[0];
-    // If hostname is like "api.portorey.my.id", skip it and check X-Tenant header
+    // If hostname is like "api.kalako.local", skip it and check X-Tenant header
     if (prefix !== 'api') {
-      subdomain = prefix;  // tokomaju from tokomaju.portorey.my.id
+      subdomain = prefix;  // tokomaju from tokomaju.kalako.local
     }
   }
 

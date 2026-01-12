@@ -3,24 +3,24 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { query } from '../db.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { JWT_SECRET, JWT_EXPIRES_IN } from '../config.js';
+import { JWT_SECRET, JWT_EXPIRES_IN, ROOT_DOMAIN, COOKIE_DOMAIN } from '../config.js';
 
 const router = express.Router();
 
 function hostIsAllowed(req) {
   const host = String(req.headers.host || '').split(':')[0];
-  return host === 'portorey.my.id';
+  return host === ROOT_DOMAIN;
 }
 
-function requestFromPortoreyAdmin(req) {
+function requestFromRootAdmin(req) {
   const origin = String(req.headers.origin || '');
   const referer = String(req.headers.referer || '');
 
-  // Jika referer ada, cek apakah berasal dari portorey.my.id dan path dimulai /admin
+  // Jika referer ada, cek apakah berasal dari ROOT_DOMAIN dan path dimulai /admin
   try {
     if (referer) {
       const u = new URL(referer);
-      if (u.hostname === 'portorey.my.id' && u.pathname.startsWith('/admin')) return true;
+      if (u.hostname === ROOT_DOMAIN && u.pathname.startsWith('/admin')) return true;
     }
   } catch (e) {
     // ignore
@@ -30,7 +30,7 @@ function requestFromPortoreyAdmin(req) {
   try {
     if (origin) {
       const o = new URL(origin);
-      if (o.hostname === 'portorey.my.id') return true;
+      if (o.hostname === ROOT_DOMAIN) return true;
     }
   } catch (e) {
     // ignore
@@ -40,7 +40,7 @@ function requestFromPortoreyAdmin(req) {
 }
 
 // POST /api/admin/login
-// Hanya untuk super_admin dan hanya diakses dari portorey.my.id/admin/login
+// Hanya untuk super_admin dan hanya diakses dari ROOT_DOMAIN/admin/login
 router.post('/login', async (req, res) => {
   const { username, password } = req.body || {};
 
@@ -48,14 +48,14 @@ router.post('/login', async (req, res) => {
     return res.status(400).json({ message: 'Username dan password wajib diisi' });
   }
 
-  // Cek sumber request: request harus berasal dari halaman/admin di portorey.my.id
-  if (!hostIsAllowed(req) && !requestFromPortoreyAdmin(req)) {
+  // Cek sumber request: request harus berasal dari halaman/admin di ROOT_DOMAIN
+  if (!hostIsAllowed(req) && !requestFromRootAdmin(req)) {
     console.warn('Denied admin login due to origin/referer mismatch', {
       host: req.headers.host,
       origin: req.headers.origin,
       referer: req.headers.referer,
     });
-    return res.status(403).json({ message: 'Akses login admin hanya dari portorey.my.id/admin/login' });
+    return res.status(403).json({ message: `Akses login admin hanya dari ${ROOT_DOMAIN}/admin/login` });
   }
 
   try {
@@ -75,7 +75,7 @@ router.post('/login', async (req, res) => {
     res.cookie('token', token, {
       httpOnly: false,
       sameSite: 'lax',
-      domain: '.portorey.my.id',
+      domain: COOKIE_DOMAIN,
       path: '/',
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });

@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { query, withTransaction } from '../db.js';
 import { sendEmail } from '../utils/sendEmail.js';
-import { JWT_SECRET, JWT_EXPIRES_IN } from '../config.js';
+import { JWT_SECRET, JWT_EXPIRES_IN, ROOT_DOMAIN, COOKIE_DOMAIN } from '../config.js';
 import { authMiddleware, addToBlacklist } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -184,7 +184,8 @@ router.post('/client/signup-with-otp', async (req, res) => {
 
     // Send welcome email with subdomain info
     try {
-      const subdomainUrl = `https://${result.client.subdomain}.portorey.my.id`;
+      const linkProtocol = process.env.LINK_PROTOCOL || (ROOT_DOMAIN.endsWith('.local') ? 'http' : 'https');
+      const subdomainUrl = `${linkProtocol}://${result.client.subdomain}.${ROOT_DOMAIN}`;
       const emailSubject = 'Selamat! Pendaftaran Kalako Anda Berhasil';
       const emailBody = `
 Selamat, pendaftaran Anda ke Kalako telah berhasil!
@@ -193,7 +194,7 @@ Berikut adalah domain web Anda:
 ${subdomainUrl}
 
 Nama Toko: ${result.client.name}
-Subdomain: ${result.client.subdomain}.portorey.my.id
+Subdomain: ${result.client.subdomain}.${ROOT_DOMAIN}
 
 Anda dapat login menggunakan username dan password yang telah Anda daftarkan.
 
@@ -275,10 +276,8 @@ router.post('/login', async (req, res) => {
     console.log("User data:", { userId: user.id, clientId: user.client_id, role: user.role });
     const token = jwt.sign({ userId: user.id, clientId: user.client_id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     
-    // Set cookie domain based on where request came from
-    // For api.portorey.my.id (global API): use .portorey.my.id so subdomain cookies work
-    // For tenant.portorey.my.id (subdomain API): use .portorey.my.id
-    const cookieDomain = ".portorey.my.id";
+    // Set cookie domain based on configured root (works for kalako.local and production)
+    const cookieDomain = COOKIE_DOMAIN;
     
     res.cookie("token", token, {
       httpOnly: false,
@@ -325,12 +324,12 @@ router.post("/logout", (req, res) => {
   }
   // Clear cookie for multiple possible domains so logout works across deployments
   try {
-    res.clearCookie("token", { path: "/" });
-    res.clearCookie("token", { domain: ".portorey.my.id", path: "/" });
-    res.clearCookie("token", { domain: ".api.portorey.my.id", path: "/" });
-    // Clear admin token cookie too
-    res.clearCookie("admin_token", { path: "/" });
-    res.clearCookie("admin_token", { domain: ".portorey.my.id", path: "/" });
+    const domainsToClear = [undefined, COOKIE_DOMAIN, `.api.${ROOT_DOMAIN}`];
+    domainsToClear.forEach((domain) => {
+      const opts = domain ? { domain, path: "/" } : { path: "/" };
+      res.clearCookie("token", opts);
+      res.clearCookie("admin_token", opts);
+    });
   } catch (e) {
     console.warn('Error clearing cookies on logout:', e && e.message);
   }
