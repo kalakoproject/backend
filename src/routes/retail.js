@@ -244,4 +244,51 @@ router.post("/categories", authMiddleware, async (req, res) => {
   }
 });
 
+/* =========================================
+ * GET /api/retail/units
+ * =======================================*/
+router.get("/units", authMiddleware, async (req, res) => {
+  try {
+    const clientId = req.client.id;
+
+    const result = await pool.query(
+      `SELECT id, name FROM product_units WHERE client_id = $1 ORDER BY name ASC`,
+      [clientId]
+    );
+
+    return res.json(result.rows);
+  } catch (err) {
+    console.error("GET /api/retail/units error:", err);
+    return res
+      .status(500)
+      .json({ message: "Gagal memuat satuan", detail: String(err) });
+  }
+});
+
+/* =========================================
+ * POST /api/retail/units
+ * =======================================*/
+router.post("/units", authMiddleware, async (req, res) => {
+  try {
+    const clientId = req.client.id;
+    const { name } = req.body;
+
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ message: "Nama satuan wajib diisi" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO product_units (client_id, name) VALUES ($1, $2) RETURNING id, name`,
+      [clientId, String(name).trim()]
+    );
+
+    return res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error("POST /api/retail/units error:", err);
+    return res
+      .status(500)
+      .json({ message: "Gagal menambah satuan", detail: String(err) });
+  }
+});
+
 export default router;
